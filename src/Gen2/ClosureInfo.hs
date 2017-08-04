@@ -27,6 +27,10 @@ import           StgSyn
 import           DataCon
 import           TyCon
 import           Type
+#if __GLASGOW_HASKELL__ >= 801
+import           TyCoRep
+import           RepType (typePrimRep)
+#endif
 import           Id
 
 -- closure types
@@ -113,11 +117,33 @@ idVt :: Id -> [VarType]
 idVt = typeVt . idType
 
 typeVt :: Type -> [VarType]
+#if __GLASGOW_HASKELL__ >= 801
+typeVt t = map primRepVt (RepType.typePrimRep t)
+#else
 typeVt t | isRuntimeRepKindedTy t || isRuntimeRepTy t = []
 typeVt t = case repType t of
              UbxTupleRep uts   -> concatMap typeVt (dropRuntimeRepArgs uts)
              UnaryRep ut       -> [uTypeVt ut]
+#endif
 
+primRepVt :: PrimRep -> VarType
+primRepVt VoidRep    = VoidV
+#if __GLASGOW_HASKELL__ >= 801
+primRepVt rep
+  | isGcPtrRep rep   = PtrV
+#else
+primRepVt PtrRep     = PtrV -- fixme does ByteArray# ever map to this?
+#endif
+primRepVt IntRep     = IntV
+primRepVt WordRep    = IntV
+primRepVt Int64Rep   = LongV
+primRepVt Word64Rep  = LongV
+primRepVt AddrRep    = AddrV
+primRepVt FloatRep   = DoubleV
+primRepVt DoubleRep  = DoubleV
+primRepVt (VecRep{}) = error "uTypeVt: vector types are unsupported"
+
+#if __GLASGOW_HASKELL__ < 801
 -- only use if you know it's not an unboxed tuple
 uTypeVt :: UnaryType -> VarType
 uTypeVt ut
@@ -126,16 +152,6 @@ uTypeVt ut
   | isPrimitiveType ut = primTypeVt ut
   | otherwise          = primRepVt . typePrimRep' $ ut
   where
-    primRepVt VoidRep    = VoidV
-    primRepVt PtrRep     = PtrV -- fixme does ByteArray# ever map to this?
-    primRepVt IntRep     = IntV
-    primRepVt WordRep    = IntV
-    primRepVt Int64Rep   = LongV
-    primRepVt Word64Rep  = LongV
-    primRepVt AddrRep    = AddrV
-    primRepVt FloatRep   = DoubleV
-    primRepVt DoubleRep  = DoubleV
-    primRepVt (VecRep{}) = error "uTypeVt: vector types are unsupported"
 
 typePrimRep' :: UnaryType -> PrimRep
 typePrimRep' ty = kindPrimRep' (typeKind ty)
@@ -218,6 +234,7 @@ primTypeVt t = case repType t of
 
 argVt :: StgArg -> VarType
 argVt = uTypeVt . stgArgType
+#endif
 
 instance ToJExpr VarType where
   toJExpr = toJExpr . fromEnum

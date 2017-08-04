@@ -156,7 +156,11 @@ buildingProf dflags = WayProf `elem` ways dflags
 -- use instead of ErrUtils variant to prevent being suppressed
 compilationProgressMsg :: DynFlags -> String -> IO ()
 compilationProgressMsg dflags msg
+#if __GLASGOW_HASKELL__ >= 801
+  = ifVerbose dflags 1 (log_action dflags dflags NoReason SevOutput ghcjsSrcSpan (defaultUserStyle dflags) (text msg))
+#else
   = ifVerbose dflags 1 (log_action dflags dflags NoReason SevOutput ghcjsSrcSpan defaultUserStyle (text msg))
+#endif
 
 ifVerbose :: DynFlags -> Int -> IO () -> IO ()
 ifVerbose dflags val act

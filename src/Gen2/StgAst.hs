@@ -67,20 +67,28 @@ instance Show Module where show m = packageKeyString (modulePackageKey m) ++ ":"
 #else
 instance Show Module where show m = packageIdString (modulePackageId m) ++ ":" ++ moduleNameString (moduleName m)
 #endif
+#if __GLASGOW_HASKELL__ >= 801
+instance Show (UniqFM Id) where show u = "[" ++ show (nonDetEltsUFM u) ++ "]"
+#else
 instance Show (UniqFM Id) where show u = "[" ++ show (uniqSetToList u) ++ "]"
+#endif
 instance Show TyCon where show = show . tyConName
+#if __GLASGOW_HASKELL__ < 801
 instance Show SRT where
   show NoSRT = "SRT:NO"
   show (SRTEntries e) = "SRT:" ++ show e
 #if __GLASGOW_HASKELL__ < 711
   show (SRT i j _b) = "SRT:BMP" ++ show [i,j]
 #endif
+#endif
+#if __GLASGOW_HASKELL__ < 801
 #if __GLASGOW_HASKELL__ >= 711
 instance Show UnitId where show = unitIdString
 #elif __GLASGOW_HASKELL__ >= 709
 instance Show PackageKey where show = packageKeyString
 #else
 instance Show PackageId where show = packageIdString
+#endif
 #endif
 instance Show Name where
   show n = case nameModule_maybe n of
@@ -158,18 +166,34 @@ bindingRefs u (StgNonRec _ rhs) = rhsRefs u rhs
 bindingRefs u (StgRec bs)       = l (rhsRefs u . snd) bs
 
 rhsRefs :: UniqFM StgExpr -> StgRhs -> Set Id
+#if __GLASGOW_HASKELL__ >= 801
+rhsRefs u (StgRhsClosure _ _ _ _ _ body) = exprRefs u body
+#else
 rhsRefs u (StgRhsClosure _ _ _ _ _ _ body) = exprRefs u body
+#endif
 rhsRefs u (StgRhsCon _ d args) = l s [ i | AnId i <- dataConImplicitTyThings d] <> l (argRefs u) args
 
 exprRefs :: UniqFM StgExpr -> StgExpr -> Set Id
 exprRefs u (StgApp f args) = s f <> l (argRefs u) args
+#if __GLASGOW_HASKELL__ >= 801
+exprRefs u (StgConApp d args _) = l s [ i | AnId i <- dataConImplicitTyThings d] <> l (argRefs u) args
+#else
 exprRefs u (StgConApp d args) = l s [ i | AnId i <- dataConImplicitTyThings d] <> l (argRefs u) args
+#endif
 exprRefs u (StgOpApp _ args _) = l (argRefs u) args
 exprRefs _ (StgLit {}) = mempty
 exprRefs _ (StgLam {}) = mempty
+#if __GLASGOW_HASKELL__ >= 801
+exprRefs u (StgCase expr _ _ alts) = exprRefs u expr <> alts^.folded._3.to (exprRefs u)
+#else
 exprRefs u (StgCase expr _ _ _ _ _ alts) = exprRefs u expr <> alts^.folded._4.to (exprRefs u)
+#endif
 exprRefs u (StgLet bnd expr) = bindingRefs u bnd <> exprRefs u expr
+#if __GLASGOW_HASKELL__ >= 801
+exprRefs u (StgLetNoEscape bnd expr) = bindingRefs u bnd <> exprRefs u expr
+#else
 exprRefs u (StgLetNoEscape _ _ bnd expr) = bindingRefs u bnd <> exprRefs u expr
+#endif
 #if __GLASGOW_HASKELL__ < 709
 exprRefs u (StgTick _ _ expr) = exprRefs u expr
 exprRefs u (StgSCC _ _ _ expr) = exprRefs u expr

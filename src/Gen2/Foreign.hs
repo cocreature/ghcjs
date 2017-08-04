@@ -54,6 +54,9 @@ import DataCon
 import Outputable
 import Coercion
 import Type
+#if __GLASGOW_HASKELL__ >= 801
+import RepType
+#endif
 import TysWiredIn
 import TysPrim
 import CoreUtils
@@ -393,7 +396,11 @@ dsJsFExportDynamic id co0 _cconv = do
     let fun_ty = head arg_tys
     arg_id <- newSysLocalDs fun_ty
     let mkExport = mkFCallId dflags u
+#if __GLASGOW_HASKELL__ >= 801
+                      (CCall (CCallSpec (StaticTarget (SourceText "h$mkExportDyn") (fsLit "h$mkExportDyn") Nothing True) JavaScriptCallConv PlayRisky))
+#else
                       (CCall (CCallSpec (StaticTarget "h$mkExportDyn" (fsLit "h$mkExportDyn") Nothing True) JavaScriptCallConv PlayRisky))
+#endif
                       (mkFunTy addrPrimTy ty)
         mkExportTy = mkFunTy (mkFunTys arg_tys res_ty) unitTy
         (_fun_args0, _fun_r) = splitFunTys (dropForAlls fun_ty)
@@ -412,7 +419,44 @@ dsJsFExportDynamic id co0 _cconv = do
 dsJsCall :: Id -> Coercion -> ForeignCall -> Maybe Header
         -> DsM ([(Id, Expr TyVar)], SDoc, SDoc)
 
-#if __GLASGOW_HASKELL__ >= 711
+#if __GLASGOW_HASKELL__ >= 801
+dsJsCall fn_id co fcall mDeclHeader = do
+    let
+        ty                     = pFst $ coercionKind co
+        (tv_bndrs, rho)        = tcSplitForAllTyVarBndrs ty
+        (arg_tys, io_res_ty) = tcSplitFunTys rho
+        tvs                    = map binderVar tv_bndrs
+                -- Must use tcSplit* functions because we want to
+                -- see that (IO t) in the corner
+
+    args <- newSysLocalsDs arg_tys
+    (val_args, arg_wrappers) <- mapAndUnzipM unboxJsArg (map Var args)
+
+    let
+        work_arg_ids  = [v | Var v <- val_args] -- All guaranteed to be vars
+
+    (ccall_result_ty, res_wrapper) <- boxJsResult io_res_ty
+
+    ccall_uniq <- newUnique
+    work_uniq  <- newUnique
+
+    dflags <- getDynFlags
+    let
+        -- Build the worker
+        worker_ty     = mkForAllTys tv_bndrs (mkFunTys (map idType work_arg_ids) ccall_result_ty)
+        the_ccall_app = mkFCall dflags ccall_uniq fcall val_args ccall_result_ty
+        work_rhs      = mkLams tvs (mkLams work_arg_ids the_ccall_app)
+        work_id       = mkSysLocal (fsLit "$wccall") work_uniq worker_ty
+
+        -- Build the wrapper
+        work_app     = mkApps (mkVarApps (Var work_id) tvs) val_args
+        wrapper_body = foldr ($) (res_wrapper work_app) arg_wrappers
+        wrap_rhs     = mkLams (tvs ++ args) wrapper_body
+        wrap_rhs'    = Cast wrap_rhs co
+        fn_id_w_inl  = fn_id `setIdUnfolding` mkInlineUnfoldingWithArity (length args) wrap_rhs'
+
+    return ([(work_id, work_rhs), (fn_id_w_inl, wrap_rhs')], empty, empty)
+#elif __GLASGOW_HASKELL__ >= 711
 dsJsCall fn_id co fcall mDeclHeader = do
     let
         ty                     = pFst $ coercionKind co
@@ -500,8 +544,12 @@ showFFIType t = getOccString (getName (typeTyCon t))
 
 typeTyCon :: Type -> TyCon
 typeTyCon ty
+#if __GLASGOW_HASKELL__ >= 801
+  | Just (tc, _) <- tcSplitTyConApp_maybe (unwrapType ty)
+#else
   | UnaryRep rep_ty <- repType ty
   , Just (tc, _) <- tcSplitTyConApp_maybe rep_ty
+#endif
   = tc
   | otherwise
   = pprPanic "Gen2.Foreign.typeTyCon" (ppr ty)
@@ -824,7 +872,11 @@ jsResultWrapper result_ty
 -- low-level primitive JavaScript call:
 mkJsCall :: DynFlags -> Unique -> String -> [CoreExpr] -> Type -> CoreExpr
 mkJsCall dflags u tgt args t =
+#if __GLASGOW_HASKELL__ >= 801
+  mkFCall dflags u (CCall (CCallSpec (StaticTarget (SourceText tgt) (mkFastString tgt)
+#else
   mkFCall dflags u (CCall (CCallSpec (StaticTarget tgt (mkFastString tgt)
+#endif
                                                        (Just primPackageKey)
                                                        True)
                                       JavaScriptCallConv PlayRisky)) args t
@@ -850,7 +902,12 @@ getPrimTyOf ty
         prim_ty
      _other -> pprPanic "DsForeign.getPrimTyOf" (ppr ty)
   where
+#if __GLASGOW_HASKELL__ >= 801
+        rep_ty = unwrapType ty
+#else
         UnaryRep rep_ty = repType ty
+#endif
+
 
 -- When the result of a foreign call is smaller than the word size, we
 -- need to sign- or zero-extend the result up to the word size.  The C
@@ -902,7 +959,11 @@ ghcjsNativeDsForeigns fos = do
       convertForeignDecl _ x = x
 
       convertSpec :: DynFlags -> Located Id -> CImportSpec
+#if __GLASGOW_HASKELL__ >= 801
+      convertSpec dflags i = CFunction (StaticTarget (SourceText "") (stubName dflags (unLoc i)) Nothing True)
+#else
       convertSpec dflags i = CFunction (StaticTarget "" (stubName dflags (unLoc i)) Nothing True)
+#endif
 
       stubName :: DynFlags -> Id -> FastString
       stubName dflags i = mkFastString $
@@ -956,7 +1017,11 @@ jsTySigLit dflags isResult t | isResult, Just (_ ,result) <- tcSplitIOType_maybe
   where
            tcSig :: Bool -> TyCon -> (String, Char)
            tcSig isResult tc
+#if __GLASGOW_HASKELL__ >= 801
+             | isUnliftedTyCon tc                                  = prim (tyConPrimRep1 tc)
+#else
              | isUnliftedTyCon tc                                  = prim (tyConPrimRep tc)
+#endif
              | Just r <- lookup (getUnique tc) boxed               = r
              | isResult && getUnique tc == unitTyConKey            = ("void", 'v')
              | isJSValTyCon dflags tc = ("StgPtr", 'r')
@@ -965,7 +1030,12 @@ jsTySigLit dflags isResult t | isResult, Just (_ ,result) <- tcSplitIOType_maybe
               where
                  -- fixme is there already a list of these somewhere else?
                  prim VoidRep  = error "jsTySigLit: VoidRep"
+#if __GLASGOW_HASKELL__ >= 801
+                 prim LiftedRep = hsPtr
+                 prim UnliftedRep = hsPtr
+#else
                  prim PtrRep   = hsPtr
+#endif
                  prim IntRep   = hsInt
                  prim WordRep  = hsWord
                  prim Int64Rep = hsInt64
@@ -1072,7 +1142,7 @@ isGhcjsFFIImportResultTy dflags ty
     where
       check ty | Just (tc, args) <- tcSplitTyConApp_maybe ty
                , getUnique tc == liftedTypeKindTyConKey
-                 || getUnique tc == unliftedTypeKindTyConKey = IsValid
+                 {- || getUnique tc == unliftedTypeKindTyConKey -} = IsValid
                | isValid (isGhcjsFFIImportResultTy' dflags ty) = IsValid
                | isGhcjsFFITy dflags ty = IsValid
                | otherwise = NotValid (text $ "")

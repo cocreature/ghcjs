@@ -187,7 +187,11 @@ handleWebSocket pending = do
                                  putStrLn "closing connection"
                                  WS.sendClose conn (""::T.Text)
                             _ | i < 0 -> replicateM_ (negate i) $
+#if __GLASGOW_HASKELL__ >= 801
+                                 WS.sendDataMessage conn (WS.Text "TestTextMessage" Nothing)
+#else
                                  WS.sendDataMessage conn (WS.Text "TestTextMessage")
+#endif
                             _         -> replicateM_ i $
                                  WS.sendDataMessage conn (WS.Binary "TestBinaryMessage")
              _         -> putStrLn "received non-numeric message"

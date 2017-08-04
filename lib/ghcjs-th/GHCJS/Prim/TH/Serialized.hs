@@ -17,7 +17,9 @@ import Data.Binary
 import Data.Bits
 import Data.Data
 import Data.Typeable
+#if __GLASGOW_HASKELL__ < 801
 import Data.Typeable.Internal
+#endif
 import Data.Word
 
 -- | Represents a serialized value of a particular type. Attempts can be made to deserialize it at certain types
@@ -28,6 +30,7 @@ instance Binary Serialized where
         put the_type >> put bytes
     get = Serialized <$> get <*> get
 
+#if __GLASGOW_HASKELL__ < 801
 instance Binary TyCon where
     put tc = put (tyConPackage tc) >> put (tyConModule tc) >> put (tyConName tc)
     get = mkTyCon3 <$> get <*> get <*> get
@@ -37,6 +40,7 @@ instance Binary TypeRep where
       let (ty_con, child_type_reps) = splitTyConApp type_rep
       in  put ty_con >> put child_type_reps
     get = mkTyConApp <$> get <*> get
+#endif
 
 -- | Put a Typeable value that we are able to actually turn into bytes into a 'Serialized' value ready for deserialization later
 toSerialized :: Typeable a => (a -> [Word8]) -> a -> Serialized

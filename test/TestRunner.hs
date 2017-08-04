@@ -44,7 +44,7 @@ import           System.Timeout (timeout)
 import           Test.Framework
 import           Test.Framework.Providers.HUnit (testCase)
 import           Test.HUnit.Base (assertBool, assertFailure, assertEqual, Assertion)
-import           Test.HUnit.Lang (HUnitFailure(..))
+import           Test.HUnit.Lang (HUnitFailure(..), formatFailureReason)
 import qualified Data.Yaml as Yaml
 import           Data.Yaml (FromJSON(..), Value(..), (.:), (.:?), (.!=))
 import           Data.Default
@@ -54,6 +54,7 @@ import           GHC.IO.Exception(IOErrorType(..), IOException(..))
 import qualified Control.Exception as C
 import           Text.Read (readMaybe)
 import           Options.Applicative
+import           Options.Applicative.Common
 import           Options.Applicative.Types
 import           Options.Applicative.Internal
 import           Options.Applicative.Help hiding ((</>), fullDesc)
@@ -90,8 +91,8 @@ setupTests :: FilePath -> IO ()
 setupTests tmpDir = do
   args <- getArgs
   (testArgs, leftoverArgs) <-
-    case runP (runParser AllowOpts optParser args) (prefs idm) of
-      (Left err, _ctx)    -> error ("error parsing arguments: " ++ show err)
+    case runP (runParser AllPositionals CmdStart optParser args) (prefs idm) of
+      (Left err, _ctx)    -> error ("error parsing arguments: " {- TODO ++ show err -})
       (Right (a,l), _ctx) -> return (a,l)
   when (taHelp testArgs) $ do
     defaultMainWithArgs [] ["--help"] `C.catch` \(e::ExitCode) -> return ()
@@ -316,7 +317,7 @@ testCaseLog :: TestOpts -> TestName -> Assertion -> Test
 testCaseLog opts name assertion = testCase name assertion'
   where
     assertion'   = assertion `C.catch` \e@(HUnitFailure _ msg) -> do
-      let errMsg = listToMaybe (filter (not . null) (lines msg))
+      let errMsg = listToMaybe (filter (not . null) (lines (formatFailureReason msg)))
           err    = name ++ maybe "" (\x -> " (" ++ trunc (dropName x) ++ ")") errMsg
           trunc xs | length xs > 43 = take 40 xs ++ "..."
                    | otherwise = xs

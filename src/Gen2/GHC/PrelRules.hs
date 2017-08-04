@@ -27,7 +27,11 @@ import CoreSyn
 import MkCore
 import Id
 import Literal
+#if __GLASGOW_HASKELL__ >= 801
+import CoreOpt     ( exprIsLiteral_maybe )
+#else
 import CoreSubst   ( exprIsLiteral_maybe )
+#endif
 import PrimOp      ( PrimOp(..), tagToEnumKey )
 import TysWiredIn
 import TysPrim

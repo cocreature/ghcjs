@@ -76,7 +76,7 @@ data Message
 instance Binary THResultType
 instance Binary Message
 
-#if MIN_VERSION_template_haskell(2,12,0)
+#if MIN_VERSION_template_haskell(2,13,0)
 #error "unsupported template-haskell version"
 #elif MIN_VERSION_template_haskell(2,9,0)
 

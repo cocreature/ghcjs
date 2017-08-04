@@ -25,6 +25,9 @@ import Id
 import Literal
 import Module
 import Name
+#if __GLASGOW_HASKELL__ >= 801
+import RepType
+#endif
 import Type
 import TyCon
 import Coercion
@@ -49,6 +52,9 @@ import OrdList
 import Pair
 import Util
 import Hooks
+#if __GLASGOW_HASKELL__ >= 801
+import Encoding
+#endif
 
 import Data.Maybe
 import Data.List
@@ -194,6 +200,7 @@ dsFCall :: Id -> Coercion -> ForeignCall -> Maybe Header
         -> DsM ([(Id, Expr TyVar)], SDoc, SDoc)
 dsFCall fn_id co fcall mDeclHeader = do
     let
+#if __GLASGOW_HASKELL__ < 801
         ty                     = pFst $ coercionKind co
         (all_bndrs, io_res_ty) = tcSplitPiTys ty
         (named_bndrs, arg_tys) = partitionBindersIntoBinders all_bndrs
@@ -203,6 +210,12 @@ dsFCall fn_id co fcall mDeclHeader = do
                                  map (binderVar "dsFCall") named_bndrs
                 -- Must use tcSplit* functions because we want to
                 -- see that (IO t) in the corner
+#else
+        ty                   = pFst $ coercionKind co
+        (tv_bndrs, rho)      = tcSplitForAllTyVarBndrs ty
+        (arg_tys, io_res_ty) = tcSplitFunTys rho
+        tvs                  = map binderVar tv_bndrs
+#endif
 
     args <- newSysLocalsDs arg_tys
     (val_args, arg_wrappers) <- mapAndUnzipM unboxArg (map Var args)
@@ -222,7 +235,11 @@ dsFCall fn_id co fcall mDeclHeader = do
                                CApiConv safety) ->
                do wrapperName <- mkWrapperName "ghc_wrapper" (unpackFS cName)
                   let fcall' = CCall (CCallSpec
+#if __GLASGOW_HASKELL__ >= 801
+                                      (StaticTarget NoSourceText
+#else
                                       (StaticTarget (unpackFS wrapperName)
+#endif
                                                     wrapperName mUnitId
                                                     True)
                                       CApiConv safety)
@@ -265,7 +282,11 @@ dsFCall fn_id co fcall mDeclHeader = do
                   return (fcall, empty)
     let
         -- Build the worker
+#if __GLASGOW_HASKELL__ >= 801
+        worker_ty     = mkForAllTys tv_bndrs (mkFunTys (map idType work_arg_ids) ccall_result_ty)
+#else
         worker_ty     = mkForAllTys named_bndrs (mkFunTys (map idType work_arg_ids) ccall_result_ty)
+#endif
         the_ccall_app = mkFCall dflags ccall_uniq fcall' val_args ccall_result_ty
         work_rhs      = mkLams tvs (mkLams work_arg_ids the_ccall_app)
         work_id       = mkSysLocal (fsLit "$wccall") work_uniq worker_ty
@@ -275,7 +296,11 @@ dsFCall fn_id co fcall mDeclHeader = do
         wrapper_body = foldr ($) (res_wrapper work_app) arg_wrappers
         wrap_rhs     = mkLams (tvs ++ args) wrapper_body
         wrap_rhs'    = Cast wrap_rhs co
+#if __GLASGOW_HASKELL__ >= 801
+        fn_id_w_inl  = fn_id `setIdUnfolding` mkInlineUnfoldingWithArity (length args) wrap_rhs'
+#else
         fn_id_w_inl  = fn_id `setIdUnfolding` mkInlineUnfolding (Just (length args)) wrap_rhs'
+#endif
 
     return ([(work_id, work_rhs), (fn_id_w_inl, wrap_rhs')], empty, cDoc)
 
@@ -299,8 +324,13 @@ dsPrimCall :: Id -> Coercion -> ForeignCall
 dsPrimCall fn_id co fcall = do
     let
         ty                   = pFst $ coercionKind co
+#if __GLASGOW_HASKELL__ >= 801
+        (tvs, fun_ty)        = tcSplitForAllTys ty
+        (arg_tys, io_res_ty) = tcSplitFunTys fun_ty
+#else
         (bndrs, io_res_ty)   = tcSplitPiTys ty
         (tvs, arg_tys)       = partitionBinders bndrs
+#endif
                 -- Must use tcSplit* functions because we want to
                 -- see that (IO t) in the corner
 
@@ -417,16 +447,25 @@ dsFExportDynamic :: Id
 dsFExportDynamic id co0 cconv = do
     -- MASSERT( fst (span isNamedBinder bndrs) `equalLength` tvs )
       -- make sure that the named binders all come first
+#if __GLASGOW_HASKELL__ < 801
     fe_id <-  newSysLocalDs ty
+#endif
     mod <- getModule
     dflags <- getDynFlags
     let
+#if __GLASGOW_HASKELL__ < 801
         -- hack: need to get at the name of the C stub we're about to generate.
         -- TODO: There's no real need to go via String with
         -- (mkFastString . zString). In fact, is there a reason to convert
         -- to FastString at all now, rather than sticking with FastZString?
         fe_nm    = mkFastString (zString (zEncodeFS (moduleNameFS (moduleName mod))) ++ "_" ++ toCName dflags fe_id)
 
+#else
+        fe_nm = mkFastString $ zEncodeString
+            (moduleStableString mod ++ "$" ++ toCName dflags id)
+#endif
+        -- Construct the label based on the passed id, don't use names
+        -- depending on Unique. See #13807 and Note [Unique Determinism].
     cback <- newSysLocalDs arg_ty
     newStablePtrId <- dsLookupGlobalId newStablePtrName
     stable_ptr_tycon <- dsLookupTyCon stablePtrTyConName
@@ -480,8 +519,13 @@ dsFExportDynamic id co0 cconv = do
 
  where
   ty                       = pFst (coercionKind co0)
+#if __GLASGOW_HASKELL__ >= 801
+  (tvs,sans_foralls)       = tcSplitForAllTys ty
+  ([arg_ty], fn_res_ty)    = tcSplitFunTys sans_foralls
+#else
   (bndrs, fn_res_ty)       = tcSplitPiTys ty
   (tvs, [arg_ty])          = partitionBinders bndrs
+#endif
   Just (io_tc, res_ty)     = tcSplitIOType_maybe fn_res_ty
         -- Must have an IO type; hence Just
 
@@ -731,8 +775,12 @@ toCType = f False
 
 typeTyCon :: Type -> TyCon
 typeTyCon ty
+#if __GLASGOW_HASKELL__ >= 801
+  | Just (tc, _) <- tcSplitTyConApp_maybe (unwrapType ty)
+#else
   | UnaryRep rep_ty <- repType ty
   , Just (tc, _) <- tcSplitTyConApp_maybe rep_ty
+#endif
   = tc
   | otherwise
   = pprPanic "DsForeign.typeTyCon" (ppr ty)
@@ -791,7 +839,11 @@ getPrimTyOf ty
         prim_ty
      _other -> pprPanic "DsForeign.getPrimTyOf" (ppr ty)
   where
+#if __GLASGOW_HASKELL__ >= 801
+        rep_ty = unwrapType ty
+#else
         UnaryRep rep_ty = repType ty
+#endif
 
 -- represent a primitive type as a Char, for building a string that
 -- described the foreign function type.  The types are size-dependent,
@@ -800,7 +852,11 @@ primTyDescChar :: DynFlags -> Type -> Char
 primTyDescChar dflags ty
  | ty `eqType` unitTy = 'v'
  | otherwise
+#if __GLASGOW_HASKELL__ >= 801
+ = case typePrimRep1 (getPrimTyOf ty) of
+#else
  = case typePrimRep (getPrimTyOf ty) of
+#endif
      IntRep      -> signed_word
      WordRep     -> unsigned_word
      Int64Rep    -> 'L'

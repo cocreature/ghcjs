@@ -177,7 +177,11 @@ getPackageHsLibs dflags
 
 searchModule :: DynFlags -> ModuleName -> [(String, PackageKey)]
 searchModule dflags
+#if __GLASGOW_HASKELL__ >= 801
+  = map ((\k -> (getPackageName dflags k, k)) . packageConfigId . snd)
+#else
   = map ((\k -> (getPackageName dflags k, k)) . unitId . snd)
+#endif
 --  $ fromLookupResult
 --  $ lookupModuleWithSuggestions dflags mn Nothing
   . lookupModuleInAllPackages dflags
